@@ -1,7 +1,10 @@
 log([<string or number or varname>,] ...);
 iniv([<varname>,] ...);
 defv([<varname>, <value>,] ...);
+getForCounter(); //Can be used as a value for declaring a variable inside a For-Loop
 for(20){
-    iniv(<varname>);
-    defv(<varname>, getForCounter())
+    
+};
+if(<condition>){
+    
 };
