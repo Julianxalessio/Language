@@ -1,0 +1,31 @@
+while_start_1:
+    mov rax, [rel var_x]
+    cmp rax, 10
+    jge while_end_1
+
+    ; Statements inside the while loop
+
+    add qword [rel var_x], 1 ; Increment var_x by 1
+    jmp while_start_1
+
+while_end_1:
+; Continue with the rest of the program
+
+
+
+
+sub rsp, 8                 ; var_i reservieren
+mov qword [rsp], 0         ; var_i = 0
+
+for_start_<ForCounter>:
+    mov rax, [rsp]
+    cmp rax, [rel var_for_limit_<ForCounter>]
+    jge for_end_<ForCounter>
+
+    ; Statements inside the while loop
+
+    add qword [rsp], 1
+    jmp for_start_<ForCounter>
+
+for_end_<ForCounter>:
+add rsp, 8

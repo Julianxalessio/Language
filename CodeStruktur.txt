@@ -1,0 +1,7 @@
+log([<string or number or varname>,] ...);
+iniv([<varname>,] ...);
+defv([<varname>, <value>,] ...);
+for(20){
+    iniv(<varname>);
+    defv(<varname>, getForCounter())
+};

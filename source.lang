@@ -1,0 +1,7 @@
+iniv(x, y);
+defv(x, "Hello", y, "");
+iniv(counter);
+for(5){
+    defv(counter, getForCounter());
+    log(counter);
+};
