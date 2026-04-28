@@ -1,7 +1,19 @@
-iniv(x, y);
-defv(x, "Hello", y, "");
-iniv(counter);
-for(5){
-    defv(counter, getForCounter());
-    log(counter);
+iniv(x, y, operator, ergebnis);
+defv(
+    x, toInt(getInput("The first number: ")), 
+    y, toInt(getInput("The second number: ")), 
+    operator, getInput("The operator for the numbers: ")
+);
+if(operator == "+"){
+    defv(ergebnis, x+y);
 };
+if(operator == "-"){
+    defv(ergebnis, x-y);
+};
+if(operator == "/"){
+    defv(ergebnis, x/y);
+};
+if(operator == "*"){
+    defv(ergebnis, x*y);
+};
+log("Ergebnis: ", ergebnis);

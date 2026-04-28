@@ -1,208 +1,314 @@
 from ast_nodes import Program, CallStatement, Identifier, NumberLiteral, StringLiteral
 
-
-def _escape_nasm_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 def compile_program(ast_root):
-    """Erzeugt NASM x64 Assembly fuer iniv/defv/log und nutzt printf zur Ausgabe."""
-    if not isinstance(ast_root, Program):
-        raise ValueError("Program-Root erwartet")
-
-    data_lines = []
     text_lines = []
-
-    data_lines.append('fmt_str db "%s", 0')
-    data_lines.append('fmt_int db "%d", 0')
-    data_lines.append('space_str db " ", 0')
-    data_lines.append('nl_str db 10, 0')
-    data_lines.append('nil_str db "<nil>", 0')
-
-    string_labels = {}
+    data_lines = []
     variables = {}
-    string_counter = 0
+    var_types = {}  # name -> "int" | "str"
+    current_for_counter = None
+    temp_counter = 0
 
-    def string_label(value: str) -> str:
-        nonlocal string_counter
-        if value in string_labels:
-            return string_labels[value]
-        label = f"str_{string_counter}"
-        string_counter += 1
-        string_labels[value] = label
-        escaped = _escape_nasm_string(value)
-        data_lines.append(f'{label} db "{escaped}", 0')
-        return label
+    # Format-Strings
+    data_lines.append('fmt_int db "%d", 10, 0')
+    data_lines.append('fmt_str db "%s", 10, 0')
+    data_lines.append('fmt_in db "%s", 0')
 
-    def ensure_variable(name: str):
+    label_counter = {"if": 0, "for": 0}
+
+    def new_label(prefix):
+        label_counter[prefix] += 1
+        return f"{prefix}_{label_counter[prefix]}"
+
+    # -------------------------
+    # Hilfsfunktionen
+    # -------------------------
+
+    def ensure_variable(name, vtype="int"):
         if name not in variables:
-            variables[name] = f"var_{name}"
-            data_lines.append(f"{variables[name]} dq nil_str")
+            label = f"var_{name}"
+            variables[name] = label
+            data_lines.append(f"{label} dq 0")
+        var_types[name] = vtype
 
     def arg_pointer_operand(arg):
-        if isinstance(arg, StringLiteral):
-            return f"{string_label(arg.value)}", False
+        nonlocal current_for_counter
+        nonlocal temp_counter
 
         if isinstance(arg, NumberLiteral):
-            return f"{string_label(str(arg.value))}", False
+            label = f"num_{arg.value}"
+            if label not in variables:
+                data_lines.append(f"{label} dd {arg.value}")
+                variables[label] = label
+            # is_var=False, is_int=True
+            return label, False, True
 
-        if isinstance(arg, Identifier):
-            if arg.name not in variables:
-                raise ValueError(f"Unbekannter Bezeichner: {arg.name}")
-            return variables[arg.name], True
+        elif isinstance(arg, StringLiteral):
+            label = f"str_{temp_counter}"
+            temp_counter += 1
+            escaped = arg.value.replace("\\", "\\\\").replace('"', '\\"')
+            data_lines.append(f'{label} db "{escaped}", 0')
+            # is_var=False, is_int=False
+            return label, False, False
 
-        # Spezialfall: Marker für getForCounter()
-        if arg == "__FOR_COUNTER__":
-            # Rückgabe: aktueller Wert von i liegt auf [rsp], kein Label nötig
-            return "[rsp]", True
+        elif isinstance(arg, Identifier):
+            vtype = var_types.get(arg.name, "int")
+            ensure_variable(arg.name, vtype)
+            # is_var=True, is_int depends on tracked type
+            return variables[arg.name], True, vtype == "int"
 
-        raise ValueError(f"Unbekanntes Argument: {type(arg).__name__ if not isinstance(arg, str) else arg}")
+        # Binary Expressions
+        elif hasattr(arg, 'op') and hasattr(arg, 'left'):
+            left_ptr, _, _ = arg_pointer_operand(arg.left)
+            right_ptr, _, _ = arg_pointer_operand(arg.right)
 
-    def emit_printf_from_ptr(ptr_operand: str, is_memory_ptr: bool):
-        text_lines.append("    sub rsp, 40")
-        # Wenn der Pointer [rsp] ist, dann ist es ein Integer (getForCounter)
-        if ptr_operand == "[rsp]":
-            text_lines.append("    lea rcx, [rel fmt_int]")
-            text_lines.append(f"    mov rdx, {ptr_operand}")
-        else:
-            text_lines.append("    lea rcx, [rel fmt_str]")
-            if is_memory_ptr:
-                text_lines.append(f"    mov rdx, [rel {ptr_operand}]")
+            temp = f"tmp_{temp_counter}"
+            temp_counter += 1
+            variables[temp] = temp
+            data_lines.append(f"{temp} dd 0")
+
+            text_lines.append(f"    mov eax, [rel {left_ptr}]")
+
+            if arg.op == "PLUS":
+                text_lines.append(f"    add eax, [rel {right_ptr}]")
+            elif arg.op == "MINUS":
+                text_lines.append(f"    sub eax, [rel {right_ptr}]")
+            elif arg.op == "STAR":
+                text_lines.append(f"    imul eax, [rel {right_ptr}]")
+            elif arg.op == "SLASH":
+                text_lines.append("    cdq")
+                text_lines.append(f"    idiv dword [rel {right_ptr}]")
             else:
-                text_lines.append(f"    lea rdx, [rel {ptr_operand}]")
+                raise ValueError(f"Unbekannter Operator: {arg.op}")
+
+            text_lines.append(f"    mov [rel {temp}], eax")
+            # is_var=False, is_int=True
+            return temp, False, True
+
+        # Funktionsaufrufe
+        elif isinstance(arg, CallStatement):
+
+            if arg.function_name == "getForCounter":
+                if current_for_counter is None:
+                    raise ValueError("getForCounter außerhalb von for")
+                return current_for_counter, False, True
+
+            elif arg.function_name == "toInt":
+                if len(arg.args) != 1:
+                    raise ValueError("toInt erwartet genau 1 Argument")
+
+                ptr, is_var, _ = arg_pointer_operand(arg.args[0])
+
+                temp = f"tmp_{temp_counter}"
+                temp_counter += 1
+                variables[temp] = temp
+                data_lines.append(f"{temp} dd 0")
+
+                # Wenn is_var: Variable enthält Adresse -> mov; sonst Label = Adresse -> lea
+                if is_var:
+                    text_lines.append(f"    mov rcx, [rel {ptr}]")
+                else:
+                    text_lines.append(f"    lea rcx, [rel {ptr}]")
+                text_lines.append("    sub rsp, 40")
+                text_lines.append("    call atoi")
+                text_lines.append("    add rsp, 40")
+                text_lines.append(f"    mov [rel {temp}], eax")
+
+                return temp, False, True
+
+            elif arg.function_name == "getInput":
+                if len(arg.args) != 1 or not isinstance(arg.args[0], StringLiteral):
+                    raise ValueError("getInput braucht genau 1 String")
+
+                msg = arg.args[0].value
+                msg_label = f"msg_{len(data_lines)}"
+                data_lines.append(f'{msg_label} db "{msg}", 0')
+
+                buf = f"inputbuf_{temp_counter}"
+                data_lines.append(f"{buf} db 64 dup(0)")
+                temp_counter += 1
+
+                # print message
+                text_lines.append(f"    lea rcx, [rel {msg_label}]")
+                text_lines.append("    sub rsp, 40")
+                text_lines.append("    call printf")
+                text_lines.append("    add rsp, 40")
+
+                # scanf string
+                text_lines.append(f"    lea rcx, [rel fmt_in]")
+                text_lines.append(f"    lea rdx, [rel {buf}]")
+                text_lines.append("    sub rsp, 40")
+                text_lines.append("    call scanf")
+                text_lines.append("    add rsp, 40")
+
+                # is_var=False (buf ist direkt das Label), is_int=False (String)
+                return buf, False, False
+
+            else:
+                raise ValueError(f"Unbekannte Funktion: {arg.function_name}")
+
+        else:
+            raise ValueError(f"Unsupported argument: {type(arg)}")
+
+    def emit_printf_int(ptr):
+        text_lines.append("    lea rcx, [rel fmt_int]")
+        text_lines.append(f"    mov eax, [rel {ptr}]")
+        text_lines.append("    mov rdx, rax")
+        text_lines.append("    sub rsp, 40")
+        text_lines.append("    call printf")
+        text_lines.append("    add rsp, 40")
+
+    def emit_printf_str(ptr, is_var=False):
+        text_lines.append("    lea rcx, [rel fmt_str]")
+        if is_var:
+            # Variable enthält eine Adresse -> dereferenzieren
+            text_lines.append(f"    mov rdx, [rel {ptr}]")
+        else:
+            # Label IST die Adresse
+            text_lines.append(f"    lea rdx, [rel {ptr}]")
+        text_lines.append("    sub rsp, 40")
         text_lines.append("    call printf")
         text_lines.append("    add rsp, 40")
 
     def emit_log_call(args):
-        for idx, arg in enumerate(args):
-            ptr_operand, is_memory_ptr = arg_pointer_operand(arg)
-            emit_printf_from_ptr(ptr_operand, is_memory_ptr)
+        for arg in args:
+            ptr, is_var, is_int = arg_pointer_operand(arg)
+            if is_int:
+                emit_printf_int(ptr)
+            else:
+                emit_printf_str(ptr, is_var=is_var)
 
-            if idx < len(args) - 1:
-                emit_printf_from_ptr("space_str", False)
+    # -------------------------
+    # Codegen
+    # -------------------------
 
-        emit_printf_from_ptr("nl_str", False)
+    def compile_block(statements):
+        nonlocal current_for_counter
 
-
-    for stmt in ast_root.statements:
-        if isinstance(stmt, CallStatement):
-            if stmt.function_name == "iniv":
-                for arg in stmt.args:
-                    if not isinstance(arg, Identifier):
-                        raise ValueError("iniv(...) erwartet nur Variablennamen")
-                    ensure_variable(arg.name)
+        for stmt in statements:
+            if stmt is None:
                 continue
 
-            if stmt.function_name == "defv":
-                if len(stmt.args) % 2 != 0:
-                    raise ValueError("defv(...) erwartet Paare: varname, value")
+            if isinstance(stmt, CallStatement):
 
-                i = 0
-                while i < len(stmt.args):
-                    name_arg = stmt.args[i]
-                    value_arg = stmt.args[i + 1]
-
-                    if not isinstance(name_arg, Identifier):
-                        raise ValueError("defv(...) erwartet als erstes Element im Paar einen Variablennamen")
-
-                    ensure_variable(name_arg.name)
-                    ptr_operand, is_memory_ptr = arg_pointer_operand(value_arg)
-
-                    if is_memory_ptr:
-                        text_lines.append(f"    mov rax, [rel {ptr_operand}]")
-                    else:
-                        text_lines.append(f"    lea rax, [rel {ptr_operand}]")
-                    text_lines.append(f"    mov [rel {variables[name_arg.name]}], rax")
-
-                    i += 2
-                continue
-
-            if stmt.function_name == "log":
-                emit_log_call(stmt.args)
-                continue
-
-            raise ValueError(f"Unbekannte Funktion: {stmt.function_name}")
-
-        elif type(stmt).__name__ == "ForNode":
-            count = stmt.counter
-            block_statements = stmt.body
-
-            for_counter = len([l for l in text_lines if l.startswith('for_start_')])
-            limit_var = f"var_for_limit_{for_counter}"
-            data_lines.append(f"{limit_var} dq {count}")
-
-            text_lines.append(f"    sub rsp, 8                 ; var_i reservieren")
-            text_lines.append(f"    mov qword [rsp], 0         ; var_i = 0")
-            text_lines.append(f"for_start_{for_counter}:")
-            text_lines.append(f"    mov rax, [rsp]")
-            text_lines.append(f"    cmp rax, [rel {limit_var}]")
-            text_lines.append(f"    jge for_end_{for_counter}")
-
-
-            # Erweiterung: Erlaube defv und getForCounter() im for-Block
-            for block_stmt in block_statements:
-                if not isinstance(block_stmt, CallStatement):
-                    raise ValueError(f"Unbekanntes Statement im for-Block: {type(block_stmt).__name__}")
-
-                # Ersetze getForCounter() durch aktuellen i-Wert (liegt auf [rsp])
-                def replace_getForCounter(args):
-                    new_args = []
-                    for arg in args:
-                        if isinstance(arg, CallStatement) and arg.function_name == "getForCounter" and len(arg.args) == 0:
-                            # Erzeuge einen speziellen Marker für den i-Wert
-                            new_args.append("__FOR_COUNTER__")
-                        else:
-                            new_args.append(arg)
-                    return new_args
-
-                if block_stmt.function_name == "log":
-                    emit_log_call(replace_getForCounter(block_stmt.args))
-                elif block_stmt.function_name == "defv":
-                    # defv(varname, value)
-                    args = replace_getForCounter(block_stmt.args)
-                    if len(args) % 2 != 0:
-                        raise ValueError("defv(...) erwartet Paare: varname, value")
+                if stmt.function_name == "defv":
                     i = 0
-                    while i < len(args):
-                        name_arg = args[i]
-                        value_arg = args[i + 1]
-                        if not isinstance(name_arg, Identifier):
-                            raise ValueError("defv(...) erwartet als erstes Element im Paar einen Variablennamen")
-                        ensure_variable(name_arg.name)
-                        if value_arg == "__FOR_COUNTER__":
-                            # Aktuellen i-Wert (liegt auf [rsp]) zuweisen
-                            text_lines.append(f"    mov rax, [rsp]")
-                            text_lines.append(f"    mov [rel {variables[name_arg.name]}], rax")
+                    while i < len(stmt.args):
+                        name = stmt.args[i]
+                        value = stmt.args[i + 1]
+
+                        ptr, _, is_int = arg_pointer_operand(value)
+                        vtype = "int" if is_int else "str"
+                        ensure_variable(name.name, vtype)
+
+                        if is_int:
+                            text_lines.append(f"    mov eax, [rel {ptr}]")
+                            text_lines.append(f"    mov [rel {variables[name.name]}], eax")
                         else:
-                            ptr_operand, is_memory_ptr = arg_pointer_operand(value_arg)
-                            if is_memory_ptr:
-                                text_lines.append(f"    mov rax, [rel {ptr_operand}]")
-                            else:
-                                text_lines.append(f"    lea rax, [rel {ptr_operand}]")
-                            text_lines.append(f"    mov [rel {variables[name_arg.name]}], rax")
+                            text_lines.append(f"    lea rax, [rel {ptr}]")
+                            text_lines.append(f"    mov [rel {variables[name.name]}], rax")
+
                         i += 2
-                else:
-                    raise ValueError(f"Nur log(...) und defv(...) Aufrufe im for-Block erlaubt, gefunden: {block_stmt.function_name}")
 
-            text_lines.append(f"    add qword [rsp], 1")
-            text_lines.append(f"    jmp for_start_{for_counter}")
-            text_lines.append(f"for_end_{for_counter}:")
-            text_lines.append(f"    add rsp, 8")
-            continue
+                elif stmt.function_name == "log":
+                    emit_log_call(stmt.args)
 
-        else:
-            raise ValueError(f"Unbekanntes Statement: {type(stmt).__name__}")
+                elif stmt.function_name == "iniv":
+                    for arg in stmt.args:
+                        ensure_variable(arg.name)
 
-    asm = []
-    asm.append("default rel")
-    asm.append("extern printf")
-    asm.append("section .data")
-    asm.extend(data_lines)
-    asm.append("section .text")
-    asm.append("global main")
-    asm.append("main:")
-    asm.extend(text_lines)
-    asm.append("    xor eax, eax")
-    asm.append("    ret")
+            elif stmt.__class__.__name__ == "IfNode":
+                end_label = new_label("if")
 
-    return "\n".join(asm)
+                cond = stmt.condition
+
+                if hasattr(cond, 'op'):
+                    left_ptr, left_is_var, left_is_int = arg_pointer_operand(cond.left)
+                    right_ptr, right_is_var, right_is_int = arg_pointer_operand(cond.right)
+
+                    # STRING VERGLEICH
+                    if not left_is_int or not right_is_int:
+                        # Windows x64: RCX = arg1, RDX = arg2
+                        if left_is_var:
+                            text_lines.append(f"    mov rcx, [rel {left_ptr}]")
+                        else:
+                            text_lines.append(f"    lea rcx, [rel {left_ptr}]")
+
+                        if right_is_var:
+                            text_lines.append(f"    mov rdx, [rel {right_ptr}]")
+                        else:
+                            text_lines.append(f"    lea rdx, [rel {right_ptr}]")
+
+                        text_lines.append("    sub rsp, 40")
+                        text_lines.append("    call strcmp")
+                        text_lines.append("    add rsp, 40")
+                        text_lines.append("    test eax, eax")
+
+                        if cond.op == "EQ":
+                            text_lines.append(f"    jne {end_label}")
+                        elif cond.op == "NEQ":
+                            text_lines.append(f"    je {end_label}")
+                        else:
+                            raise ValueError("String unterstützt nur == und !=")
+
+                    # INT VERGLEICH
+                    else:
+                        text_lines.append(f"    mov eax, [rel {left_ptr}]")
+                        text_lines.append(f"    cmp eax, [rel {right_ptr}]")
+
+                        if cond.op == "EQ":
+                            text_lines.append(f"    jne {end_label}")
+                        elif cond.op == "NEQ":
+                            text_lines.append(f"    je {end_label}")
+                        elif cond.op == "LTE":
+                            text_lines.append(f"    jg {end_label}")
+                        elif cond.op == "GTE":
+                            text_lines.append(f"    jl {end_label}")
+
+                compile_block(stmt.body)
+                text_lines.append(f"{end_label}:")
+
+            elif stmt.__class__.__name__ == "ForNode":
+                loop = new_label("for")
+                counter = f"{loop}_counter"
+
+                data_lines.append(f"{counter} dd 0")
+
+                text_lines.append(f"    mov dword [rel {counter}], 0")
+                text_lines.append(f"{loop}_start:")
+
+                text_lines.append(f"    mov eax, [rel {counter}]")
+                text_lines.append(f"    cmp eax, {stmt.counter}")
+                text_lines.append(f"    jge {loop}_end")
+
+                old = current_for_counter
+                current_for_counter = counter
+
+                compile_block(stmt.body)
+
+                current_for_counter = old
+
+                text_lines.append(f"    inc dword [rel {counter}]")
+                text_lines.append(f"    jmp {loop}_start")
+                text_lines.append(f"{loop}_end:")
+
+    # -------------------------
+    # Start
+    # -------------------------
+
+    compile_block(ast_root.statements)
+
+    return "\n".join([
+        "default rel",
+        "extern printf",
+        "extern scanf",
+        "extern strcmp",
+        "extern atoi",
+        "section .data",
+        *data_lines,
+        "section .text",
+        "global main",
+        "main:",
+        *text_lines,
+        "    xor eax, eax",
+        "    ret"
+    ])

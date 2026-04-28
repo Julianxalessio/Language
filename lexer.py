@@ -41,6 +41,38 @@ class Lexer:
                 tokens.append(Token("NUMBER", self.source[start:self.index], start))
                 continue
 
+
+            two_char_ops = {
+                "==": "EQ",
+                "!=": "NEQ",
+                "<=": "LTE",
+                ">=": "GTE",
+            }
+
+            pair = self.source[self.index:self.index+2]
+            if pair in two_char_ops:
+                tokens.append(Token(two_char_ops[pair], pair, self.index))
+                self.index += 2
+                continue
+
+            # Single-char arithmetic operators
+            if ch == '+':
+                tokens.append(Token("PLUS", ch, self.index))
+                self.index += 1
+                continue
+            if ch == '-':
+                tokens.append(Token("MINUS", ch, self.index))
+                self.index += 1
+                continue
+            if ch == '*':
+                tokens.append(Token("STAR", ch, self.index))
+                self.index += 1
+                continue
+            if ch == '/':
+                tokens.append(Token("SLASH", ch, self.index))
+                self.index += 1
+                continue
+
             if ch.isalpha() or ch == "_":
                 start = self.index
                 while self.index < self.length and (
@@ -48,7 +80,7 @@ class Lexer:
                 ):
                     self.index += 1
                 value = self.source[start:self.index]
-                kind = "FOR" if value == "for" else "IDENT"
+                kind = "FOR" if value == "for" else "IF" if value == "if" else "IDENT"
                 tokens.append(Token(kind, value, start))
                 continue
 

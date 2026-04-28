@@ -1,4 +1,4 @@
-from ast_nodes import ForNode, Program, CallStatement, Identifier, NumberLiteral, StringLiteral
+from ast_nodes import BinaryOp, ForNode, IfNode, Program, CallStatement, Identifier, NumberLiteral, StringLiteral
 
 """
 PARSER-TEMPLATE
@@ -26,6 +26,33 @@ class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.index = 0
+    
+    
+
+    def parse_expression(self):
+        # Parse lowest precedence (add/sub)
+        node = self.parse_term()
+        while self.current().kind in ("PLUS", "MINUS"):
+            op_token = self.consume(self.current().kind)
+            right = self.parse_term()
+            node = BinaryOp(node, op_token.kind, right)
+        # Comparison operators
+        if self.current().kind in ("EQ", "NEQ", "LTE", "GTE"):
+            op_token = self.consume(self.current().kind)
+            right = self.parse_expression()
+            return BinaryOp(node, op_token.kind, right)
+        return node
+
+    def parse_term(self):
+        node = self.parse_factor()
+        while self.current().kind in ("STAR", "SLASH"):
+            op_token = self.consume(self.current().kind)
+            right = self.parse_factor()
+            node = BinaryOp(node, op_token.kind, right)
+        return node
+
+    def parse_factor(self):
+        return self.parse_argument()
 
     def current(self):
         """Gibt das aktuelle Token an self.index zurueck."""
@@ -58,11 +85,26 @@ class Parser:
     def parse_for_statement(self):
         self.consume("FOR")
         self.consume("LPAREN")
-        count = self.consume("NUMBER").value
+        # Erlaube Zahl oder Identifier als Limit
+        if self.current().kind == "NUMBER":
+            count = NumberLiteral(self.consume("NUMBER").value)
+        elif self.current().kind == "IDENT":
+            count = Identifier(self.consume("IDENT").value)
+        else:
+            raise SyntaxError(f"FOR erwartet Zahl oder Variablenname als Limit, gefunden: {self.current().kind}")
         self.consume("RPAREN")
         self.consume("LBRACE")
         body = self.parse_block()
         return ForNode(count, body)
+    
+    def parse_if_statement(self):
+        self.consume("IF")
+        self.consume("LPAREN")
+        condition = self.parse_expression()
+        self.consume("RPAREN")
+        self.consume("LBRACE")
+        body = self.parse_block()
+        return IfNode(condition, body)
 
     def parse_block(self):
         statements = []
@@ -77,10 +119,10 @@ class Parser:
 
         args = []
         if self.current().kind != "RPAREN":
-            args.append(self.parse_argument())
+            args.append(self.parse_expression())
             while self.current().kind == "COMMA":
                 self.consume("COMMA")
-                args.append(self.parse_argument())
+                args.append(self.parse_expression())
 
         self.consume("RPAREN")
         self.consume("SEMICOLON")
@@ -105,10 +147,10 @@ class Parser:
                 self.consume("LPAREN")
                 args = []
                 if self.current().kind != "RPAREN":
-                    args.append(self.parse_argument())
+                    args.append(self.parse_expression())
                     while self.current().kind == "COMMA":
                         self.consume("COMMA")
-                        args.append(self.parse_argument())
+                        args.append(self.parse_expression())
                 self.consume("RPAREN")
                 return CallStatement(function_name, args)
             else:
@@ -127,6 +169,11 @@ class Parser:
             return self.parse_call_statement()
         if self.current().kind == "FOR":
             return self.parse_for_statement()
+        if self.current().kind == "IF":
+            return self.parse_if_statement()
         if self.current().kind == "EOF":
             return None
+        if self.current().kind == "RBRACE":
+            return None
         raise SyntaxError(f"Unerwartetes Statement-Token {self.current().kind} an Position {self.current().pos}")
+

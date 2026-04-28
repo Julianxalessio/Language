@@ -1,11 +1,6 @@
 from dataclasses import dataclass
+from turtle import left, right
 from typing import List
-
-
-# ===== AST TEMPLATE =====
-# Diese Knoten sind absichtlich minimal gehalten.
-# Hier kannst du spaeter eigene Sprach-Features ergaenzen.
-
 
 @dataclass
 class Program:
@@ -33,5 +28,19 @@ class StringLiteral:
 
 @dataclass
 class ForNode:
-    counter: int
+    counter: object  # NumberLiteral oder Identifier
     body: list
+
+@dataclass
+class IfNode:
+    condition: object
+    body: list
+
+@dataclass
+class BinaryOp:
+    left: object
+    op: str
+    right: object
+
+class InputNode:
+    pass

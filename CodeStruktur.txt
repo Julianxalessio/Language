@@ -8,3 +8,5 @@ for(20){
 if(<condition>){
     
 };
+
+defv(x, getInput([<Message>])); //Can be used as a value for a variable
